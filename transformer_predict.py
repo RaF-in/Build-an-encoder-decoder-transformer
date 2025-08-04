@@ -28,22 +28,22 @@ class TranslatorPredictor:
         )
         src_tensor = torch.tensor(src_encoded, dtype=torch.long).unsqueeze(0).to(self.device)
 
-        # # Create attention mask for encoder input
-        # src_mask = (src_tensor != self.tokenizer.en_word2idx[self.tokenizer.PAD_TOKEN]).unsqueeze(1).to(self.device)
-
-        # # Encode input sentence
-        # memory = self.model.encode(src_tensor, src_mask)
-
         # Decoder starts with SOS token
         ys = torch.tensor([[self.tokenizer.bn_word2idx[self.tokenizer.SOS_TOKEN]]], dtype=torch.long).to(self.device)
 
+        kv_cache = None
+        encoder_output_previous = None
+
+        nxt = ys.clone()
+
         for _ in range(max_length):
-            # tgt_mask = self.model.generate_square_subsequent_mask(ys.size(1)).to(self.device)
-            out, _ = self.model(src_tensor, ys)
+            out, _, encoder_output_previous, kv_cache = self.model(src_tensor, nxt, kv_cache=kv_cache, inference=True, encoder_output_previous=encoder_output_previous)
             logits = out[:, -1, :]
             next_token = logits.argmax(dim=-1).item()
 
             ys = torch.cat([ys, torch.tensor([[next_token]], dtype=torch.long).to(self.device)], dim=1)
+
+            nxt = ys[:, -1:]  # Slice last token
 
             if next_token == self.tokenizer.bn_word2idx[self.tokenizer.EOS_TOKEN]:
                 break

@@ -14,7 +14,10 @@ class Config:
     no_of_layers: int = 12
     dropout: float = 0.2
     max_steps: int = 100
+    pad_token_id: int = 0
 
+def create_mask(x): 
+    return x != Config().pad_token_id
 
 class TokenEmbeddings(nn.Module): 
     def __init__(self, config): 
@@ -65,8 +68,9 @@ class MultiHeadAttention(nn.Module):
             self.register_buffer('bias', torch.tril(torch.ones(self.config.block_size, self.config.block_size).view(1, 1, self.config.block_size, self.config.block_size)))
         else: 
             self.bias = None
-    def forward(self, x, encoder_output = None): 
+    def forward(self, x, encoder_output = None, src_mask=None, tgt_mask=None, kv_cache=None, pos=None): 
         B, T, C = x.shape
+        mask = None
         if encoder_output is not None:
             k, v = encoder_output, encoder_output
             _, T_kv, _ = k.shape  # instead of reusing T
@@ -78,18 +82,38 @@ class MultiHeadAttention(nn.Module):
         if encoder_output != None: 
             k, v = encoder_output, encoder_output
 
+        # Handle KV cache for inference
+        if kv_cache is not None:
+            k_cache, v_cache = kv_cache  # kv_cache should be tuple (k_cache, v_cache)
+            if k_cache is not None and v_cache is not None:
+                k = torch.cat([k_cache, k], dim=1)
+                v = torch.cat([v_cache, v], dim=1)
+                T_kv = k.size(1)
+
+        # Update cache
+        new_kv_cache = (k, v) if kv_cache is not None else None
+
         q = q.view(B, T, self.config.no_of_head, C// self.config.no_of_head).transpose(1, 2) # B, nh, T, C 
         k = k.view(B, T_kv, self.config.no_of_head, C// self.config.no_of_head).transpose(1, 2)
         v = v.view(B, T_kv, self.config.no_of_head, C// self.config.no_of_head).transpose(1, 2)
 
+
         wei = (q @ k.transpose(-2, -1)) * (1 / math.sqrt(k.size(-1))) # B, nh, T, T
         if self.casual:
             wei = wei.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
+            mask = tgt_mask.unsqueeze(1).unsqueeze(1)
+            mask_key = mask.unsqueeze(1).unsqueeze(1) # B, 1, 1, T
+            mask_query = mask.unsqueeze(1).unsqueeze(-1) # B, 1, T, 1
+            mask = mask_key * mask_query
+        else: 
+            mask = src_mask.unsqueeze(1).unsqueeze(1)
+
+        wei = wei.masked_fill(mask==0, float("-inf"))
 
         wei = F.softmax(wei, dim=-1)
         wei = self.dropout(wei)
         out = wei @ v # B, nh, T, C
-        return self.c_proj(out.transpose(1, 2).contiguous().view(B, T, C))
+        return self.c_proj(out.transpose(1, 2).contiguous().view(B, T, C)), new_kv_cache
     
     
 class Mlp(nn.Module): 
@@ -111,8 +135,8 @@ class EncoderBlock(nn.Module):
         self.c_attn = MultiHeadAttention(self.config, is_casual=False)
         self.ln2 = LayerNormalization(self.config)
         self.mlp = Mlp(self.config)
-    def forward(self, x): 
-        x = x + self.c_attn(self.ln1(x))
+    def forward(self, x, mask): 
+        x = x + self.c_attn(self.ln1(x), src_mask=mask, kv_cache=None)[0]
         x = x + self.mlp(self.ln2(x))
         return x
     
@@ -126,11 +150,12 @@ class DecoderBlock(nn.Module):
         self.mlp = Mlp(self.config)
         self.cross_attn = MultiHeadAttention(self.config, False)
         self.ln3 = LayerNormalization(self.config)
-    def forward(self, x, encoder_output): 
-        x = x + self.c_attn(self.ln1(x))
-        x = x + self.cross_attn(self.ln2(x), encoder_output)
+    def forward(self, x, encoder_output, src_mask, tgt_mask, kv_cache=None): 
+        xx, new_kv_cache = self.c_attn(self.ln1(x), src_mask=src_mask, kv_cache=kv_cache)
+        x = xx + x
+        x = x + self.cross_attn(self.ln2(x), encoder_output, src_mask=src_mask, tgt_mask=tgt_mask, kv_cache=None)[0]
         x = x + self.mlp(self.ln3(x))
-        return x
+        return x, new_kv_cache
     
 class Model(nn.Module): 
     def __init__(self, config): 
@@ -150,24 +175,40 @@ class Model(nn.Module):
         self.transformer.wte.weight = self.lm_head.weight
         
     
-    def forward(self, encoder_input, decoder_input, targets=None): 
+    def forward(self, encoder_input, decoder_input, targets=None, kv_cache=None, inference=False, encoder_output_previous=None): 
         B, T = encoder_input.shape
+        src_mask, tgt_mask = create_mask(encoder_input), create_mask(decoder_input)
         encoder_input = self.transformer.wte(encoder_input)
         encoder_input = self.transformer.wpe(encoder_input)
+
+        if inference and kv_cache is None: 
+            kv_cache = {
+                "decoder": [None] * len(self.transformer.decoders)
+            }
 
         decoder_input = self.transformer.wte(decoder_input)
         decoder_input = self.transformer.wpe(decoder_input)
 
-        encoder_output = None
-        for i in range(len(self.transformer.encoders)): 
-            encoder_input = self.transformer.encoders[i](encoder_input)
+        if encoder_output_previous is not None: 
+            encoder_output = encoder_output_previous
+        else:
+            for i in range(len(self.transformer.encoders)): 
+                encoder_input= self.transformer.encoders[i](encoder_input, src_mask=src_mask)
+            encoder_output = encoder_input.clone()
 
-        encoder_output = encoder_input.clone()
-        for i in range(len(self.transformer.decoders)): 
-            decoder_input = self.transformer.decoders[i](decoder_input, encoder_output)
+        for i, layer in enumerate(self.transformer.decoders):
+            layer_cache = kv_cache["decoder"][i] if inference else None
+            decoder_input, new_cache = layer(decoder_input, encoder_output, src_mask, tgt_mask, kv_cache=layer_cache)
+            if inference:
+                kv_cache["decoder"][i] = new_cache
+
         decoder_input = self.ln_f(decoder_input)
         logits = self.lm_head(decoder_input)
         loss = None
-        if targets != None: 
-            loss = F.cross_entropy(logits.view(B*T, -1), targets.view(-1))
-        return logits, loss
+        if targets is not None:
+            # Replace pad tokens with -100 in the target so they are ignored in loss
+            targets_masked = targets.clone()
+            targets_masked[targets_masked == self.config.pad_token_id] = -100
+
+            loss = F.cross_entropy(logits.view(B * T, -1), targets_masked.view(-1), ignore_index=-100)
+        return logits, loss, encoder_output, kv_cache

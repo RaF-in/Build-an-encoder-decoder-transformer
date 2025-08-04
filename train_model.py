@@ -113,7 +113,7 @@ def test_model():
             decoder_data = decoder_data.to(device)
             targets = targets.to(device)
             with torch.autocast(device_type=device, dtype=torch.bfloat16):
-                logits, loss = model(encoder_data, decoder_data, targets)
+                logits, loss, _, _ = model(encoder_data, decoder_data, targets)
             avg_loss += loss.detach()
     print(f"total val loss = {avg_loss/total_test_steps}")
 
@@ -133,7 +133,7 @@ def train_model():
             decoder_data = decoder_data.to(device)
             targets = targets.to(device)
             with torch.autocast(device_type=device, dtype=torch.bfloat16):
-                logits, loss = model(encoder_data, decoder_data, targets)
+                logits, loss, _, _ = model(encoder_data, decoder_data, targets)
             loss = loss / grad_accum_steps
             avg_loss += loss.detach() 
             loss.backward()
