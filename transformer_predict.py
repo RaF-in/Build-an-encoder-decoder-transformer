@@ -58,6 +58,6 @@ if __name__ == "__main__":
     
     predictor = TranslatorPredictor(model_path, tokenizer_path)
     
-    input_sentence = "hello world"
+    input_sentence = "russian boy is here"
     prediction = predictor.predict(input_sentence)
     print(f"Translated: {prediction}")

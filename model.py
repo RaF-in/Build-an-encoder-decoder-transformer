@@ -13,7 +13,7 @@ class Config:
     no_of_head: int = 6
     no_of_layers: int = 12
     dropout: float = 0.2
-    max_steps: int = 100
+    max_steps: int = 50
     pad_token_id: int = 0
 
 def create_mask(x): 
@@ -68,7 +68,7 @@ class MultiHeadAttention(nn.Module):
             self.register_buffer('bias', torch.tril(torch.ones(self.config.block_size, self.config.block_size).view(1, 1, self.config.block_size, self.config.block_size)))
         else: 
             self.bias = None
-    def forward(self, x, encoder_output = None, src_mask=None, tgt_mask=None, kv_cache=None, pos=None): 
+    def forward(self, x, encoder_output = None, src_mask=None, tgt_mask=None, kv_cache=None): 
         B, T, C = x.shape
         mask = None
         if encoder_output is not None:
@@ -96,18 +96,13 @@ class MultiHeadAttention(nn.Module):
         q = q.view(B, T, self.config.no_of_head, C// self.config.no_of_head).transpose(1, 2) # B, nh, T, C 
         k = k.view(B, T_kv, self.config.no_of_head, C// self.config.no_of_head).transpose(1, 2)
         v = v.view(B, T_kv, self.config.no_of_head, C// self.config.no_of_head).transpose(1, 2)
-
-
         wei = (q @ k.transpose(-2, -1)) * (1 / math.sqrt(k.size(-1))) # B, nh, T, T
         if self.casual:
-            wei = wei.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
+            wei = wei.masked_fill(self.bias[:, :, :T, :T_kv] == 0, float('-inf'))
             mask = tgt_mask.unsqueeze(1).unsqueeze(1)
-            mask_key = mask.unsqueeze(1).unsqueeze(1) # B, 1, 1, T
-            mask_query = mask.unsqueeze(1).unsqueeze(-1) # B, 1, T, 1
-            mask = mask_key * mask_query
+            mask = mask.expand(B, 1, T, T)
         else: 
             mask = src_mask.unsqueeze(1).unsqueeze(1)
-
         wei = wei.masked_fill(mask==0, float("-inf"))
 
         wei = F.softmax(wei, dim=-1)
@@ -135,8 +130,8 @@ class EncoderBlock(nn.Module):
         self.c_attn = MultiHeadAttention(self.config, is_casual=False)
         self.ln2 = LayerNormalization(self.config)
         self.mlp = Mlp(self.config)
-    def forward(self, x, mask): 
-        x = x + self.c_attn(self.ln1(x), src_mask=mask, kv_cache=None)[0]
+    def forward(self, x, src_mask): 
+        x = x + self.c_attn(self.ln1(x), src_mask=src_mask, kv_cache=None)[0]
         x = x + self.mlp(self.ln2(x))
         return x
     
@@ -151,9 +146,9 @@ class DecoderBlock(nn.Module):
         self.cross_attn = MultiHeadAttention(self.config, False)
         self.ln3 = LayerNormalization(self.config)
     def forward(self, x, encoder_output, src_mask, tgt_mask, kv_cache=None): 
-        xx, new_kv_cache = self.c_attn(self.ln1(x), src_mask=src_mask, kv_cache=kv_cache)
+        xx, new_kv_cache = self.c_attn(self.ln1(x), src_mask=src_mask, tgt_mask=tgt_mask, kv_cache=kv_cache)
         x = xx + x
-        x = x + self.cross_attn(self.ln2(x), encoder_output, src_mask=src_mask, tgt_mask=tgt_mask, kv_cache=None)[0]
+        x = x + self.cross_attn(self.ln2(x), encoder_output, src_mask=src_mask, kv_cache=None)[0]
         x = x + self.mlp(self.ln3(x))
         return x, new_kv_cache
     
@@ -193,15 +188,15 @@ class Model(nn.Module):
             encoder_output = encoder_output_previous
         else:
             for i in range(len(self.transformer.encoders)): 
-                encoder_input= self.transformer.encoders[i](encoder_input, src_mask=src_mask)
+                encoder_input = self.transformer.encoders[i](encoder_input, src_mask=src_mask)
             encoder_output = encoder_input.clone()
-
+        
         for i, layer in enumerate(self.transformer.decoders):
             layer_cache = kv_cache["decoder"][i] if inference else None
             decoder_input, new_cache = layer(decoder_input, encoder_output, src_mask, tgt_mask, kv_cache=layer_cache)
             if inference:
                 kv_cache["decoder"][i] = new_cache
-
+        
         decoder_input = self.ln_f(decoder_input)
         logits = self.lm_head(decoder_input)
         loss = None
