@@ -3,6 +3,8 @@ import numpy as np
 from model import Model  # Make sure to import your model definition
 from prepare_dataset import TranslationTokenizer  # Adjust this import as needed
 
+torch.set_float32_matmul_precision('high')
+
 class TranslatorPredictor:
     def __init__(self, model_path: str, tokenizer_path: str):
         # Load tokenizer
@@ -37,7 +39,8 @@ class TranslatorPredictor:
         nxt = ys.clone()
 
         for _ in range(max_length):
-            out, _, encoder_output_previous, kv_cache = self.model(src_tensor, nxt, kv_cache=kv_cache, inference=True, encoder_output_previous=encoder_output_previous)
+            with torch.autocast(device_type=self.device, dtype=torch.bfloat16):
+                out, _, encoder_output_previous, kv_cache = self.model(src_tensor, nxt, kv_cache=kv_cache, inference=True, encoder_output_previous=encoder_output_previous)
             logits = out[:, -1, :]
             next_token = logits.argmax(dim=-1).item()
 

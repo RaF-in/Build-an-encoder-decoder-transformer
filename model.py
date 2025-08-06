@@ -46,15 +46,17 @@ class PositionalEmbeddings(nn.Module):
     
 class LayerNormalization(nn.Module): 
     def __init__(self, config, eps=1e-6): 
-        self.config = config
         super().__init__()
+        self.config = config
         self.alpha = nn.Parameter(torch.ones(self.config.n_embd))
         self.beta = nn.Parameter(torch.zeros(self.config.n_embd))
         self.eps = eps
+
     def forward(self, x): 
         mean = torch.mean(x, dim=-1, keepdim=True)
-        std = torch.std(x, dim=-1, keepdim=True)
+        std = torch.std(x, dim=-1, keepdim=True, unbiased=False) 
         return self.alpha * ((x - mean) / (std + self.eps)) + self.beta
+
 
 class MultiHeadAttention(nn.Module): 
     def __init__(self, config, is_casual=True):
@@ -62,6 +64,7 @@ class MultiHeadAttention(nn.Module):
         self.config = config
         self.c_attn = nn.Linear(self.config.n_embd, self.config.n_embd * 3)
         self.c_proj = nn.Linear(self.config.n_embd, self.config.n_embd)
+        self.c_proj.INIT_FLAG=1
         self.dropout = nn.Dropout(self.config.dropout)
         self.casual = is_casual
         if is_casual: 
@@ -118,6 +121,7 @@ class Mlp(nn.Module):
         self.c_fc = nn.Linear(self.config.n_embd, self.config.n_embd * 4)
         self.gelu = nn.GELU(approximate='tanh')
         self.c_proj = nn.Linear(self.config.n_embd * 4, self.config.n_embd)
+        self.c_proj.INIT_FLAG=1
         self.dropout = nn.Dropout(self.config.dropout)
     def forward(self, x): 
         return self.c_proj(self.dropout(self.gelu(self.c_fc(x))))
@@ -168,6 +172,19 @@ class Model(nn.Module):
 
         # Weights sharing scheme
         self.transformer.wte.weight = self.lm_head.weight
+
+        self.apply(self.weight_init)
+
+    def weight_init(self, module):
+        std = 0.02
+        if isinstance(module, nn.Linear):
+            if hasattr(module, 'INIT_FLAG'):
+                std *= (2 * self.config.n_layer) ** -0.5
+            torch.nn.init.normal_(module.weight, std=std, mean=0.0)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, std=std, mean=0.0)
         
     
     def forward(self, encoder_input, decoder_input, targets=None, kv_cache=None, inference=False, encoder_output_previous=None): 
