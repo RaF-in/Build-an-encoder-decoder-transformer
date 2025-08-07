@@ -72,7 +72,7 @@ def configure_optimizer(model, lr, weight_decay):
     optimizer = torch.optim.AdamW(optim_group, lr=lr, fused=is_fused)
     return optimizer
 
-max_lr = 1e-4
+max_lr = 3e-4
 min_lr = max_lr * 0.001
 warmup_steps = 10
 max_steps = config.max_steps
@@ -154,17 +154,17 @@ def train_model():
             if i == config.max_steps - 1 and step == grad_accum_steps - 1:
                 register_backward_hook(model)
             loss.backward()
+        if i == config.max_steps - 1:
+            param_grads = {}
+            for name, param in model.named_parameters():
+                if param.grad is not None and param.ndim==2:
+                    param_grads[name] = param.grad.detach().cpu()
+            torch.save(param_grads, 'param_grads.pt')
+            torch.save(gradient_values, 'activation_grads.pt')
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         lr = get_lr(i)
         for param in optimizer.param_groups: 
             param['lr'] = lr
-        if i == config.max_steps - 1:
-            param_grads = {}
-            for name, param in model.named_parameters():
-                if param.grad is not None:
-                    param_grads[name] = param.grad.detach().cpu()
-            torch.save(param_grads, 'param_grads.pt')
-            torch.save(gradient_values, 'activation_grads.pt')
         
         optimizer.step()
 

@@ -13,7 +13,7 @@ class Config:
     no_of_head: int = 6
     no_of_layers: int = 12
     dropout: float = 0.2
-    max_steps: int = 50
+    max_steps: int = 109
     pad_token_id: int = 0
 
 def create_mask(x): 
@@ -179,7 +179,7 @@ class Model(nn.Module):
         std = 0.02
         if isinstance(module, nn.Linear):
             if hasattr(module, 'INIT_FLAG'):
-                std *= (2 * self.config.n_layer) ** -0.5
+                std *= (2 * self.config.no_of_layers) ** -0.5
             torch.nn.init.normal_(module.weight, std=std, mean=0.0)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
