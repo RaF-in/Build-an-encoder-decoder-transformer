@@ -4,6 +4,8 @@ from model import Config
 from model import Model
 import math
 import inspect
+import torch.nn as nn
+from model import LayerNormalization
 
 # Load the prepared data
 encoder_inputs = np.load("transformer_data/encoder_inputs.npy")
@@ -99,6 +101,19 @@ raw_model.to(device)
 
 model = raw_model
 
+gradient_values = {}
+
+def save_gradients(name):
+    def hook(module, grad_inputs, grad_outputs):
+        if grad_outputs and grad_outputs[0] is not None:
+            gradient_values[name] = grad_outputs[0].detach().cpu()
+    return hook
+
+def register_backward_hook(model):
+    for name, module in model.named_modules():
+        if isinstance(module, (nn.Linear, nn.Embedding, LayerNormalization)):
+            module.register_full_backward_hook(save_gradients(name))
+
 def test_model(): 
     val_loader.reset()
     model.eval()
@@ -119,6 +134,7 @@ def test_model():
 def train_model(): 
     train_loader.reset()
     model.train()
+    gradient_values.clear()
     print(f"total grad accum steps = {grad_accum_steps}")
     for i in range(config.max_steps): 
         if i % 100 == 0: 
@@ -135,13 +151,23 @@ def train_model():
                 logits, loss, _, _ = model(encoder_data, decoder_data, targets)
             loss = loss / grad_accum_steps
             avg_loss += loss.detach() 
+            if i == config.max_steps - 1 and step == grad_accum_steps - 1:
+                register_backward_hook(model)
             loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         lr = get_lr(i)
         for param in optimizer.param_groups: 
             param['lr'] = lr
+        if i == config.max_steps - 1:
+            param_grads = {}
+            for name, param in model.named_parameters():
+                if param.grad is not None:
+                    param_grads[name] = param.grad.detach().cpu()
+            torch.save(param_grads, 'param_grads.pt')
+            torch.save(gradient_values, 'activation_grads.pt')
         
         optimizer.step()
+
         print(f"total loss at step {i} = {avg_loss}")
         with open('log.txt', 'a+') as f:
             f.write('\n' + str(avg_loss.item()))
