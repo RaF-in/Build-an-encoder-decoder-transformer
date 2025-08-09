@@ -6,7 +6,7 @@ import pandas as pd
 from datasets import Dataset
 import os
 import pickle
-
+from model import Config
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
 
@@ -53,15 +53,8 @@ ids_bn, decoded_bn = test_round_trip(tokenizer_bn, df['bn'][5])
 print("BN ids:", ids_bn)
 print("BN decoded:", decoded_bn)
 
-def add_padding(max_len, data, padding_token):
-    for dt in data: 
-        if len(dt) > max_len: 
-            dt = dt[:max_len]
-        else:
-            dt += [padding_token] * (max_len - len(dt))
-
 # ===== Step 3: Prepare Encoder/Decoder Inputs =====
-def preprocess(examples, max_len=32):
+def preprocess(examples, max_len=Config().block_size):
     encoder_input = []
     decoder_input = []
     decoder_output = []
@@ -76,14 +69,23 @@ def preprocess(examples, max_len=32):
         bn_tokens = tokenizer_bn.encode(bn_sentence).ids
         bn_input_tokens = [tokenizer_bn.token_to_id("[SOS]")] + bn_tokens
         bn_output_tokens = bn_tokens + [tokenizer_bn.token_to_id("[EOS]")]
+
+        if len(en_tokens) > max_len: 
+            en_tokens = en_tokens[:max_len]
+        else:
+            en_tokens += [tokenizer_en.token_to_id("[PAD]")] * (max_len - len(en_tokens))
+        if len(bn_input_tokens) > max_len:
+            bn_input_tokens = bn_input_tokens[:max_len]
+        else:
+            bn_input_tokens += [tokenizer_bn.token_to_id("[PAD]")] * (max_len - len(bn_input_tokens))
+        if len(bn_output_tokens) > max_len:
+            bn_output_tokens = bn_output_tokens[:max_len]
+        else:
+            bn_output_tokens += [-100] * (max_len - len(bn_output_tokens))
         
         encoder_input.append(en_tokens)
         decoder_input.append(bn_input_tokens)
         decoder_output.append(bn_output_tokens)
-
-    add_padding(max_len, encoder_input, tokenizer_en.token_to_id("[PAD]"))
-    add_padding(max_len, decoder_input, tokenizer_bn.token_to_id("[PAD]"))
-    add_padding(max_len, decoder_output, -100)
     
     return {
         "encoder_input": encoder_input,
@@ -113,7 +115,7 @@ def load_and_verify():
     with open("processed/tokenizer_bn.pkl", "rb") as f:
         tok_bn = pickle.load(f)
     
-    sample = ds[4453]
+    sample = ds[43]
 
     print("\n--- Verification ---")
     print("Encoder input tokens:", sample["encoder_input"])
@@ -123,7 +125,7 @@ def load_and_verify():
     # Decode back
     print("Decoded English:", tok_en.decode([x for x in sample["encoder_input"] if x != tokenizer_en.token_to_id("[PAD]")]))
     print("Decoded Bangla (input):", tok_bn.decode([x for x in sample["decoder_input"][1:] if x != tokenizer_bn.token_to_id("[PAD]")]))  # remove SOS
-    print("Decoded Bangla (output):", tok_bn.decode([x for x in sample["decoder_output"][:-1] if x != -100]))  # remove EOS
+    print("Decoded Bangla (output):", tok_bn.decode([x for x in sample["decoder_output"] if x != -100 and x != 3]))  # remove EOS
 
 
 # Run verification

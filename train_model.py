@@ -6,16 +6,20 @@ import math
 import inspect
 import torch.nn as nn
 from model import LayerNormalization
+from datasets import Dataset
 
 # Load the prepared data
-encoder_inputs = np.load("transformer_data/encoder_inputs.npy")
-decoder_inputs = np.load("transformer_data/decoder_inputs.npy")
-decoder_targets = np.load("transformer_data/decoder_targets.npy")
+# encoder_inputs = np.load("transformer_data/encoder_inputs.npy")
+# decoder_inputs = np.load("transformer_data/decoder_inputs.npy")
+# decoder_targets = np.load("transformer_data/decoder_targets.npy")
+ds = Dataset.load_from_disk("processed/translation_dataset")
 
 # Convert to tensors (PyTorch example)
-enc_inputs = torch.tensor(encoder_inputs, dtype=torch.long)
-dec_inputs = torch.tensor(decoder_inputs, dtype=torch.long)
-dec_targets = torch.tensor(decoder_targets, dtype=torch.long)
+enc_inputs = torch.stack([torch.tensor(x['encoder_input'], dtype=torch.long) for x in ds])
+dec_inputs = torch.stack([torch.tensor(x['decoder_input'], dtype=torch.long) for x in ds])
+dec_targets = torch.stack([torch.tensor(x['decoder_output'], dtype=torch.long) for x in ds])
+
+print(f"lengths of encoder inputs = {len(enc_inputs)}, and decoder inputs = {len(dec_inputs)}, decoder outputs = {len(dec_targets)}")
 
 def train_test_split(train_ratio: float, val_ratio: float): 
     total_len = len(enc_inputs)
@@ -74,10 +78,10 @@ def configure_optimizer(model, lr, weight_decay):
 
 max_lr = 3e-4
 min_lr = max_lr * 0.001
-warmup_steps = 10
+warmup_steps = 100
 max_steps = config.max_steps
 total_grad_steps = 1 << 17
-weight_decay = 0.1
+weight_decay = 0.001
 grad_accum_steps = total_grad_steps // (Config().block_size * Config().batch_size)
 
 def get_lr(it):
@@ -94,7 +98,7 @@ def get_lr(it):
     return min_lr + coeff * (max_lr - min_lr)
 
 raw_model = Model(Config())
-optimizer = configure_optimizer(raw_model, max_lr, 0.1)
+optimizer = configure_optimizer(raw_model, max_lr, 0.001)
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f"using device={device}")
 raw_model.to(device)
@@ -178,7 +182,7 @@ if __name__ == "__main__":
     torch.save({
         'model_state_dict': model.state_dict(), 
         'config': Config()
-    }, 'trained_model2.pth')
+    }, 'trained_model.pth')
             
             
 

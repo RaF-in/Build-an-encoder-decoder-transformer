@@ -7,13 +7,13 @@ import torch.nn.functional as F
 @dataclass
 class Config: 
     n_embd: int = 768
-    block_size: int = 64
+    block_size: int = 32
     batch_size: int = 64
     vocab_size: int = 50304
     no_of_head: int = 6
     no_of_layers: int = 12
-    dropout: float = 0.2
-    max_steps: int = 109
+    dropout: float = 0.4
+    max_steps: int = 500
     pad_token_id: int = 0
 
 def create_mask(x): 
@@ -41,8 +41,10 @@ class PositionalEmbeddings(nn.Module):
         pe = pe.unsqueeze(0) # 1, block_size, n_embd
         self.register_buffer('pe', pe)
         self.dropout = nn.Dropout(self.config.dropout)
-    def forward(self, x): 
-        return self.dropout(x + (self.pe[:, :x.size(1), :]).requires_grad_(False))
+    def forward(self, x, start_pos=0): 
+        pos_emb = self.pe[:, start_pos:start_pos + x.size(1), :].requires_grad_(False)
+        return self.dropout(x + pos_emb)
+
     
 class LayerNormalization(nn.Module): 
     def __init__(self, config, eps=1e-6): 
@@ -92,20 +94,23 @@ class MultiHeadAttention(nn.Module):
                 k = torch.cat([k_cache, k], dim=1)
                 v = torch.cat([v_cache, v], dim=1)
                 T_kv = k.size(1)
+                
 
         # Update cache
-        new_kv_cache = (k, v) if kv_cache is not None else None
+        new_kv_cache = (k, v) 
 
         q = q.view(B, T, self.config.no_of_head, C// self.config.no_of_head).transpose(1, 2) # B, nh, T, C 
         k = k.view(B, T_kv, self.config.no_of_head, C// self.config.no_of_head).transpose(1, 2)
         v = v.view(B, T_kv, self.config.no_of_head, C// self.config.no_of_head).transpose(1, 2)
         wei = (q @ k.transpose(-2, -1)) * (1 / math.sqrt(k.size(-1))) # B, nh, T, T
         if self.casual:
-            wei = wei.masked_fill(self.bias[:, :, :T, :T_kv] == 0, float('-inf'))
+            past_len = kv_cache[0].size(1) if kv_cache and kv_cache[0] is not None else 0
+            wei = wei.masked_fill(self.bias[:, :, past_len:past_len+T, :T_kv] == 0, float('-inf'))
             mask = tgt_mask.unsqueeze(1).unsqueeze(1)
-            mask = mask.expand(B, 1, T, T)
+            mask = mask.expand(B, 1, T, T_kv)
         else: 
             mask = src_mask.unsqueeze(1).unsqueeze(1)
+        
         wei = wei.masked_fill(mask==0, float("-inf"))
 
         wei = F.softmax(wei, dim=-1)
@@ -198,8 +203,14 @@ class Model(nn.Module):
                 "decoder": [None] * len(self.transformer.decoders)
             }
 
-        decoder_input = self.transformer.wte(decoder_input)
-        decoder_input = self.transformer.wpe(decoder_input)
+        if inference:
+            start_pos = kv_cache['decoder'][0][0].shape[1] if kv_cache['decoder'][0] else 0
+            decoder_input = self.transformer.wte(decoder_input)
+            decoder_input = self.transformer.wpe(decoder_input, start_pos=start_pos)
+        else:
+            decoder_input = self.transformer.wte(decoder_input)
+            decoder_input = self.transformer.wpe(decoder_input)
+
 
         if encoder_output_previous is not None: 
             encoder_output = encoder_output_previous
@@ -218,9 +229,5 @@ class Model(nn.Module):
         logits = self.lm_head(decoder_input)
         loss = None
         if targets is not None:
-            # Replace pad tokens with -100 in the target so they are ignored in loss
-            targets_masked = targets.clone()
-            targets_masked[targets_masked == self.config.pad_token_id] = -100
-
-            loss = F.cross_entropy(logits.view(B * T, -1), targets_masked.view(-1), ignore_index=-100)
+            loss = F.cross_entropy(logits.view(B * T, -1), targets.view(-1), ignore_index=-100)
         return logits, loss, encoder_output, kv_cache
