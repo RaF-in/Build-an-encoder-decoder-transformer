@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from model import Config
+from config import Config
 from model import Model
 import math
 import inspect
@@ -80,8 +80,8 @@ max_lr = 3e-4
 min_lr = max_lr * 0.001
 warmup_steps = 100
 max_steps = config.max_steps
-total_grad_steps = 1 << 17
-weight_decay = 0.001
+total_grad_steps = 1 << 14
+weight_decay = 0.1
 grad_accum_steps = total_grad_steps // (Config().block_size * Config().batch_size)
 
 def get_lr(it):
@@ -98,7 +98,7 @@ def get_lr(it):
     return min_lr + coeff * (max_lr - min_lr)
 
 raw_model = Model(Config())
-optimizer = configure_optimizer(raw_model, max_lr, 0.001)
+optimizer = configure_optimizer(raw_model, max_lr, 0.1)
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f"using device={device}")
 raw_model.to(device)
@@ -134,6 +134,8 @@ def test_model():
                 logits, loss, _, _ = model(encoder_data, decoder_data, targets)
             avg_loss += loss.detach()
     print(f"total val loss = {avg_loss/total_test_steps}")
+    with open('log.txt', 'a+') as f:
+        f.write('\n' + str(f"total val loss = {avg_loss/total_test_steps}"))
 
 def train_model(): 
     train_loader.reset()

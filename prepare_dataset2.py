@@ -6,7 +6,7 @@ import pandas as pd
 from datasets import Dataset
 import os
 import pickle
-from model import Config
+from config import Config
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
 

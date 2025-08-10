@@ -3,18 +3,8 @@ import math
 import torch.nn as nn
 from dataclasses import dataclass
 import torch.nn.functional as F
-
-@dataclass
-class Config: 
-    n_embd: int = 768
-    block_size: int = 32
-    batch_size: int = 64
-    vocab_size: int = 50304
-    no_of_head: int = 6
-    no_of_layers: int = 12
-    dropout: float = 0.4
-    max_steps: int = 500
-    pad_token_id: int = 0
+from Mixture_of_experts import MOE
+from config import Config
 
 def create_mask(x): 
     return x != Config().pad_token_id
@@ -138,10 +128,12 @@ class EncoderBlock(nn.Module):
         self.ln1 = LayerNormalization(self.config)
         self.c_attn = MultiHeadAttention(self.config, is_casual=False)
         self.ln2 = LayerNormalization(self.config)
-        self.mlp = Mlp(self.config)
+        # self.mlp = Mlp(self.config)
+        self.moe = MOE()
     def forward(self, x, src_mask): 
         x = x + self.c_attn(self.ln1(x), src_mask=src_mask, kv_cache=None)[0]
-        x = x + self.mlp(self.ln2(x))
+        # x = x + self.mlp(self.ln2(x))
+        x = x + self.moe(self.ln2(x))
         return x
     
 class DecoderBlock(nn.Module): 
@@ -151,14 +143,16 @@ class DecoderBlock(nn.Module):
         self.ln1 = LayerNormalization(self.config)
         self.c_attn = MultiHeadAttention(self.config)
         self.ln2 = LayerNormalization(self.config)
-        self.mlp = Mlp(self.config)
+        # self.mlp = Mlp(self.config)
+        self.moe = MOE()
         self.cross_attn = MultiHeadAttention(self.config, False)
         self.ln3 = LayerNormalization(self.config)
     def forward(self, x, encoder_output, src_mask, tgt_mask, kv_cache=None): 
         xx, new_kv_cache = self.c_attn(self.ln1(x), src_mask=src_mask, tgt_mask=tgt_mask, kv_cache=kv_cache)
         x = xx + x
         x = x + self.cross_attn(self.ln2(x), encoder_output, src_mask=src_mask, kv_cache=None)[0]
-        x = x + self.mlp(self.ln3(x))
+        # x = x + self.mlp(self.ln3(x))
+        x = x + self.moe(self.ln3(x))
         return x, new_kv_cache
     
 class Model(nn.Module): 

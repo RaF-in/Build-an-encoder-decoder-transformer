@@ -3,7 +3,7 @@ import pickle
 from collections import Counter
 from typing import List, Dict, Tuple
 import numpy as np
-from model import Config
+from config import Config
 
 config = Config()
 
