@@ -3,7 +3,7 @@ import math
 import torch.nn as nn
 from dataclasses import dataclass
 import torch.nn.functional as F
-from Mixture_of_experts import MOE
+# from Mixture_of_experts import MOE
 from config import Config
 
 def create_mask(x): 
@@ -98,10 +98,11 @@ class MultiHeadAttention(nn.Module):
             wei = wei.masked_fill(self.bias[:, :, past_len:past_len+T, :T_kv] == 0, float('-inf'))
             mask = tgt_mask.unsqueeze(1).unsqueeze(1)
             mask = mask.expand(B, 1, T, T_kv)
-        else: 
+        elif src_mask is not None: 
             mask = src_mask.unsqueeze(1).unsqueeze(1)
-        
-        wei = wei.masked_fill(mask==0, float("-inf"))
+
+        if mask is not None:
+            wei = wei.masked_fill(mask==0, float("-inf"))
 
         wei = F.softmax(wei, dim=-1)
         wei = self.dropout(wei)
@@ -129,11 +130,11 @@ class EncoderBlock(nn.Module):
         self.c_attn = MultiHeadAttention(self.config, is_casual=False)
         self.ln2 = LayerNormalization(self.config)
         # self.mlp = Mlp(self.config)
-        self.moe = MOE()
+        self.mlp = Mlp(config)
     def forward(self, x, src_mask): 
         x = x + self.c_attn(self.ln1(x), src_mask=src_mask, kv_cache=None)[0]
         # x = x + self.mlp(self.ln2(x))
-        x = x + self.moe(self.ln2(x))
+        x = x + self.mlp(self.ln2(x))
         return x
     
 class DecoderBlock(nn.Module): 
@@ -144,7 +145,7 @@ class DecoderBlock(nn.Module):
         self.c_attn = MultiHeadAttention(self.config)
         self.ln2 = LayerNormalization(self.config)
         # self.mlp = Mlp(self.config)
-        self.moe = MOE()
+        self.mlp = Mlp(config)
         self.cross_attn = MultiHeadAttention(self.config, False)
         self.ln3 = LayerNormalization(self.config)
     def forward(self, x, encoder_output, src_mask, tgt_mask, kv_cache=None): 
@@ -152,8 +153,92 @@ class DecoderBlock(nn.Module):
         x = xx + x
         x = x + self.cross_attn(self.ln2(x), encoder_output, src_mask=src_mask, kv_cache=None)[0]
         # x = x + self.mlp(self.ln3(x))
-        x = x + self.moe(self.ln3(x))
+        x = x + self.mlp(self.ln3(x))
         return x, new_kv_cache
+    
+
+class MTP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.projections = nn.ModuleList([nn.Linear(config.n_embd * 2, config.n_embd) for _ in range(config.no_head_in_mtp)])
+        self.transformer = EncoderBlock(config)
+        self.unembd = nn.Linear(config.n_embd, config.vocab_size)
+        self.token_embedding = TokenEmbeddings(config)
+        # Add a simple linear layer for single token prediction during inference
+        self.single_token_head = nn.Linear(config.n_embd, config.vocab_size)
+        self.config = config
+
+    def rmsnorm(self, x):
+        rms = torch.sqrt((x ** 2).mean(dim=-1, keepdim=True)) + 1e-8
+        return x / rms
+
+    def forward(self, x, input_tokens=None, inference_mode=False):
+
+        # For inference, use simple single token prediction
+        if inference_mode:
+            # Use the simple linear head for single token prediction
+            return self.single_token_head(x)  # [batch, seq_len, vocab_size]
+        
+        batch_size = x.size(0)
+        
+
+        hidden = self.transformer(x, src_mask=None)
+        
+        mtp_upper = x.shape[1] - self.config.no_head_in_mtp
+        
+        # Pre-allocate output tensor to avoid dynamic memory allocation
+        all_logits = torch.empty(
+            batch_size, mtp_upper, self.config.no_head_in_mtp, self.config.vocab_size,
+            dtype=x.dtype, device=x.device
+        )
+        for i in range(mtp_upper):
+            h_prev = hidden[:, i, :].clone()
+            for k in range(self.config.no_head_in_mtp):
+                future_token = i + k + 1
+                if input_tokens is not None:
+                    # Use the actual future token embeddings
+                    future_emb = self.token_embedding(input_tokens[:, future_token])
+                else:
+                    # Fallback to using the input embeddings
+                    future_emb = x[:, future_token, :]
+                h_prev = self.rmsnorm(h_prev)
+                future_emb = self.rmsnorm(future_emb)
+                concatenated_res = torch.cat([future_emb, h_prev], dim=-1)
+                curr_h = self.projections[k](concatenated_res)
+
+                # Transformer forward pass with error handling
+                transformer_input = curr_h.unsqueeze(1)
+                curr_res = self.transformer(transformer_input, None)
+                
+                # Safe reshape with validation
+                expected_size = batch_size * curr_res.size(-1)
+                if curr_res.numel() != expected_size:
+                    curr_res = curr_res.contiguous().view(batch_size, -1)
+                else:
+                    curr_res = curr_res.view(batch_size, -1)
+                
+                # Generate logits with gradient checkpointing to save memory
+                logits = self.unembd(curr_res)
+                
+                # Bounds checking before storing
+                if (i < all_logits.size(1) and k < all_logits.size(2) and 
+                    logits.size(0) == all_logits.size(0) and 
+                    logits.size(1) == all_logits.size(3)):
+                    all_logits[:, i, k, :] = logits
+                else:
+                    raise IndexError(f"Tensor size mismatch at position [{i}, {k}]")
+                
+                # Update h_prev and clean up intermediate tensors
+                h_prev = curr_h.detach()  # Detach to prevent gradient accumulation
+
+                # Clear intermediate tensors to free memory
+                del concatenated_res, curr_h, curr_res, logits
+                
+                # Force garbage collection every few iterations
+                if (i * self.config.no_head_in_mtp + k) % 10 == 0:
+                    torch.cuda.empty_cache()
+
+        return all_logits
     
 class Model(nn.Module): 
     def __init__(self, config): 
@@ -167,10 +252,13 @@ class Model(nn.Module):
             decoders = nn.ModuleList([DecoderBlock(self.config) for _ in range(self.config.no_of_layers)])
         ))
         self.ln_f = LayerNormalization(self.config)
-        self.lm_head = nn.Linear(self.config.n_embd, self.config.vocab_size)
+        self.lm_head = MTP(config)
+        # Share embedding weights with MTP
+        self.lm_head.token_embedding = self.transformer.wte
+        self.lm_head.single_token_head.weight.data = self.transformer.wte.embedding.weight.data
 
         # Weights sharing scheme
-        self.transformer.wte.weight = self.lm_head.weight
+        # self.transformer.wte.weight = self.lm_head.weight
 
         self.apply(self.weight_init)
 

@@ -76,11 +76,11 @@ def configure_optimizer(model, lr, weight_decay):
     optimizer = torch.optim.AdamW(optim_group, lr=lr, fused=is_fused)
     return optimizer
 
-max_lr = 1e-4
+max_lr = 3e-4
 min_lr = max_lr * 0.001
 warmup_steps = 50
 max_steps = config.max_steps
-total_grad_steps = 1 << 11
+total_grad_steps = 1 << 13
 weight_decay = 0.1
 grad_accum_steps = total_grad_steps // (Config().block_size * Config().batch_size)
 
