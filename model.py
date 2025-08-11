@@ -161,35 +161,30 @@ class MTP(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.projections = nn.ModuleList([nn.Linear(config.n_embd * 2, config.n_embd) for _ in range(config.no_head_in_mtp)])
-        self.transformer = EncoderBlock(config)
+        self.transformer = nn.ModuleList([EncoderBlock(config) for _ in range(config.no_head_in_mtp)])
         self.unembd = nn.Linear(config.n_embd, config.vocab_size)
         self.token_embedding = TokenEmbeddings(config)
-        # Add a simple linear layer for single token prediction during inference
-        self.single_token_head = nn.Linear(config.n_embd, config.vocab_size)
         self.config = config
 
     def rmsnorm(self, x):
         rms = torch.sqrt((x ** 2).mean(dim=-1, keepdim=True)) + 1e-8
         return x / rms
 
-    def forward(self, x, input_tokens=None, inference_mode=False):
+    def forward(self, hidden, input_tokens=None, inference_mode=False):
 
         # For inference, use simple single token prediction
         if inference_mode:
             # Use the simple linear head for single token prediction
-            return self.single_token_head(x)  # [batch, seq_len, vocab_size]
+            return self.unembd(hidden)  # [batch, seq_len, vocab_size]
         
-        batch_size = x.size(0)
+        batch_size = hidden.size(0)
         
-
-        hidden = self.transformer(x, src_mask=None)
-        
-        mtp_upper = x.shape[1] - self.config.no_head_in_mtp
+        mtp_upper = hidden.shape[1] - self.config.no_head_in_mtp
         
         # Pre-allocate output tensor to avoid dynamic memory allocation
         all_logits = torch.empty(
             batch_size, mtp_upper, self.config.no_head_in_mtp, self.config.vocab_size,
-            dtype=x.dtype, device=x.device
+            dtype=hidden.dtype, device=hidden.device
         )
         for i in range(mtp_upper):
             h_prev = hidden[:, i, :].clone()
@@ -200,7 +195,7 @@ class MTP(nn.Module):
                     future_emb = self.token_embedding(input_tokens[:, future_token])
                 else:
                     # Fallback to using the input embeddings
-                    future_emb = x[:, future_token, :]
+                    future_emb = hidden[:, future_token, :]
                 h_prev = self.rmsnorm(h_prev)
                 future_emb = self.rmsnorm(future_emb)
                 concatenated_res = torch.cat([future_emb, h_prev], dim=-1)
@@ -208,7 +203,7 @@ class MTP(nn.Module):
 
                 # Transformer forward pass with error handling
                 transformer_input = curr_h.unsqueeze(1)
-                curr_res = self.transformer(transformer_input, None)
+                curr_res = self.transformer[k](transformer_input, None)
                 
                 # Safe reshape with validation
                 expected_size = batch_size * curr_res.size(-1)
@@ -250,7 +245,6 @@ class Model(nn.Module):
         self.ln_f = LayerNormalization(self.config)
         self.lm_head = MTP(config)
         self.lm_head.unembd.weight = self.transformer.wte.embedding.weight
-        self.lm_head.single_token_head.weight = self.transformer.wte.embedding.weight
         self.lm_head.token_embedding.embedding.weight = self.transformer.wte.embedding.weight
 
 
