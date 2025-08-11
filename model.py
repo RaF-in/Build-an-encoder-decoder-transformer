@@ -265,7 +265,7 @@ class Model(nn.Module):
             torch.nn.init.normal_(module.weight, std=std, mean=0.0)
         
     
-    def forward(self, encoder_input, decoder_input, targets=None, kv_cache=None, inference=False, encoder_output_previous=None): 
+    def forward(self, encoder_input, decoder_input, targets_mtp=None, targets_single=None, kv_cache=None, inference=False, encoder_output_previous=None): 
         B, T = encoder_input.shape
         raw_decoder_input = decoder_input.clone()
         src_mask, tgt_mask = create_mask(encoder_input), create_mask(decoder_input)
@@ -300,8 +300,14 @@ class Model(nn.Module):
                 kv_cache["decoder"][i] = new_cache
         
         decoder_input = self.ln_f(decoder_input)
-        logits = self.lm_head(decoder_input, raw_decoder_input, inference)
+        logits_mtp = self.lm_head(decoder_input, raw_decoder_input, inference)
+        logits_single = self.lm_head.unembd(decoder_input)  # [B, T, V]
         loss = None
-        if targets is not None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-100)
-        return logits, loss, encoder_output, kv_cache
+        if targets_mtp is not None:
+            loss_mtp = F.cross_entropy(logits_mtp.view(-1, logits_mtp.size(-1)), targets_mtp.view(-1), ignore_index=-100) 
+            loss_single = F.cross_entropy(logits_single[:, :-1].contiguous().view(-1, logits_single.size(-1)), targets_single.view(-1),ignore_index=-100)
+            loss = loss_mtp + loss_single
+        if not inference:
+            return logits_mtp, loss, encoder_output, kv_cache
+        else:
+            return logits_single, loss, encoder_output, kv_cache

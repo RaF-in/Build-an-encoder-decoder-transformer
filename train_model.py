@@ -145,10 +145,10 @@ def test_model():
             encoder_data, decoder_data, targets = val_loader.next_batch()
             encoder_data = encoder_data.to(device)
             decoder_data = decoder_data.to(device)
-            targets = get_mtp_targets(targets)
-            targets = targets.to(device)
+            targets_mtp = get_mtp_targets(targets).to(device)
+            targets_single = targets.to(device)
             with torch.autocast(device_type=device, dtype=torch.bfloat16):
-                logits, loss, _, _ = model(encoder_data, decoder_data, targets)
+                logits, loss, _, _ = model(encoder_data, decoder_data, targets_mtp, targets_single)
             avg_loss += loss.detach()
     print(f"total val loss = {avg_loss/total_test_steps}")
     with open('log.txt', 'a+') as f:
@@ -202,7 +202,7 @@ if __name__ == "__main__":
     torch.save({
         'model_state_dict': model.state_dict(), 
         'config': Config()
-    }, 'trained_model.pth')
+    }, 'trained_model4.pth')
             
             
 
