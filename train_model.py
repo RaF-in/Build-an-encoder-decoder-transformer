@@ -118,18 +118,34 @@ def register_backward_hook(model):
         if isinstance(module, (nn.Linear, nn.Embedding, LayerNormalization)):
             module.register_full_backward_hook(save_gradients(name))
 
+def get_mtp_targets(X):
+    """
+    Generate targets for Multi-Token Prediction
+    X: [batch, seq_len]
+    Returns: [batch, seq_len-no_head_in_mtp, no_head_in_mtp]
+    """
+    B, T = X.shape
+    targets = []
+    
+    for i in range(T - config.no_head_in_mtp):
+        # For position i, predict next no_head_in_mtp tokens
+        future_tokens = X[:, i:i+config.no_head_in_mtp]
+        targets.append(future_tokens)
+    
+    return torch.stack(targets, dim=1)  # [batch, seq_len-no_head_in_mtp, no_head_in_mtp]
+
 def test_model(): 
     val_loader.reset()
     model.eval()
     avg_loss = 0
     total_test_steps = len(val_loader.enc_data) // config.batch_size
-    total_test_steps = 30
     print(f"total test steps = {total_test_steps}")
     with torch.no_grad():
         for i in range(total_test_steps): 
             encoder_data, decoder_data, targets = val_loader.next_batch()
             encoder_data = encoder_data.to(device)
             decoder_data = decoder_data.to(device)
+            targets = get_mtp_targets(targets)
             targets = targets.to(device)
             with torch.autocast(device_type=device, dtype=torch.bfloat16):
                 logits, loss, _, _ = model(encoder_data, decoder_data, targets)
@@ -153,6 +169,7 @@ def train_model():
             encoder_data, decoder_data, targets = train_loader.next_batch()
             encoder_data = encoder_data.to(device)
             decoder_data = decoder_data.to(device)
+            targets = get_mtp_targets(targets)
             targets = targets.to(device)
             with torch.autocast(device_type=device, dtype=torch.bfloat16):
                 logits, loss, _, _ = model(encoder_data, decoder_data, targets)

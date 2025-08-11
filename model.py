@@ -74,7 +74,7 @@ class MultiHeadAttention(nn.Module):
 
         qkv = self.c_attn(x)
         q, k, v = qkv.split(self.config.n_embd, dim=-1) # B, T, C
-        if encoder_output != None: 
+        if encoder_output is not None: 
             k, v = encoder_output, encoder_output
 
         # Handle KV cache for inference
@@ -233,10 +233,6 @@ class MTP(nn.Module):
 
                 # Clear intermediate tensors to free memory
                 del concatenated_res, curr_h, curr_res, logits
-                
-                # Force garbage collection every few iterations
-                if (i * self.config.no_head_in_mtp + k) % 10 == 0:
-                    torch.cuda.empty_cache()
 
         return all_logits
     
@@ -253,9 +249,10 @@ class Model(nn.Module):
         ))
         self.ln_f = LayerNormalization(self.config)
         self.lm_head = MTP(config)
-        # Share embedding weights with MTP
-        self.lm_head.token_embedding = self.transformer.wte
-        self.lm_head.single_token_head.weight.data = self.transformer.wte.embedding.weight.data
+        self.lm_head.unembd.weight = self.transformer.wte.embedding.weight
+        self.lm_head.single_token_head.weight = self.transformer.wte.embedding.weight
+        self.lm_head.token_embedding.embedding.weight = self.transformer.wte.embedding.weight
+
 
         # Weights sharing scheme
         # self.transformer.wte.weight = self.lm_head.weight
@@ -276,6 +273,7 @@ class Model(nn.Module):
     
     def forward(self, encoder_input, decoder_input, targets=None, kv_cache=None, inference=False, encoder_output_previous=None): 
         B, T = encoder_input.shape
+        raw_decoder_input = decoder_input.clone()
         src_mask, tgt_mask = create_mask(encoder_input), create_mask(decoder_input)
         encoder_input = self.transformer.wte(encoder_input)
         encoder_input = self.transformer.wpe(encoder_input)
@@ -308,8 +306,8 @@ class Model(nn.Module):
                 kv_cache["decoder"][i] = new_cache
         
         decoder_input = self.ln_f(decoder_input)
-        logits = self.lm_head(decoder_input)
+        logits = self.lm_head(decoder_input, raw_decoder_input, inference)
         loss = None
         if targets is not None:
-            loss = F.cross_entropy(logits.view(B * T, -1), targets.view(-1), ignore_index=-100)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-100)
         return logits, loss, encoder_output, kv_cache
