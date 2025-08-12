@@ -145,10 +145,12 @@ def test_model():
             encoder_data, decoder_data, targets = val_loader.next_batch()
             encoder_data = encoder_data.to(device)
             decoder_data = decoder_data.to(device)
-            targets_mtp = get_mtp_targets(targets).to(device)
-            targets_single = targets.to(device)
+            targets_single = targets.clone()
+            targets = get_mtp_targets(targets)
+            targets = targets.to(device)
+            targets_single = targets_single.to(device)
             with torch.autocast(device_type=device, dtype=torch.bfloat16):
-                logits, loss, _, _ = model(encoder_data, decoder_data, targets_mtp, targets_single)
+                logits, loss, _, _ = model(encoder_data, decoder_data, targets, targets_single)
             avg_loss += loss.detach()
     print(f"total val loss = {avg_loss/total_test_steps}")
     with open('log.txt', 'a+') as f:
@@ -169,10 +171,12 @@ def train_model():
             encoder_data, decoder_data, targets = train_loader.next_batch()
             encoder_data = encoder_data.to(device)
             decoder_data = decoder_data.to(device)
+            targets_single = targets.clone()
             targets = get_mtp_targets(targets)
             targets = targets.to(device)
+            targets_single = targets_single.to(device)
             with torch.autocast(device_type=device, dtype=torch.bfloat16):
-                logits, loss, _, _ = model(encoder_data, decoder_data, targets)
+                logits, loss, _, _ = model(encoder_data, decoder_data, targets, targets_single)
             loss = loss / grad_accum_steps
             avg_loss += loss.detach() 
             if i == config.max_steps - 1 and step == grad_accum_steps - 1:

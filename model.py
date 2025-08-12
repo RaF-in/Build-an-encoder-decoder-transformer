@@ -305,8 +305,8 @@ class Model(nn.Module):
         loss = None
         if targets_mtp is not None:
             loss_mtp = F.cross_entropy(logits_mtp.view(-1, logits_mtp.size(-1)), targets_mtp.view(-1), ignore_index=-100) 
-            loss_single = F.cross_entropy(logits_single[:, :-1].contiguous().view(-1, logits_single.size(-1)), targets_single.view(-1),ignore_index=-100)
-            loss = loss_mtp + loss_single
+            loss_single = F.cross_entropy(logits_single.view(-1, logits_single.size(-1)), targets_single.view(-1),ignore_index=-100)
+            loss = (loss_mtp + loss_single) / 2
         if not inference:
             return logits_mtp, loss, encoder_output, kv_cache
         else:
