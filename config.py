@@ -8,7 +8,7 @@ class Config:
     no_of_head: int = 6
     no_of_layers: int = 12
     dropout: float = 0.1
-    max_steps: int = 5
+    max_steps: int = 500
     pad_token_id: int = 0
     num_of_experts: int = 32
     num_of_shared_experts: int = 1

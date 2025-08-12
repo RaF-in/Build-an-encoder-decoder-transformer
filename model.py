@@ -224,7 +224,8 @@ class MTP(nn.Module):
                     raise IndexError(f"Tensor size mismatch at position [{i}, {k}]")
                 
                 # Update h_prev and clean up intermediate tensors
-                h_prev = curr_h.detach()  # Detach to prevent gradient accumulation
+                # h_prev = curr_h.detach()  # Detach to prevent gradient accumulation
+                h_prev = curr_h
 
                 # Clear intermediate tensors to free memory
                 del concatenated_res, curr_h, curr_res, logits

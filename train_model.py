@@ -206,7 +206,7 @@ if __name__ == "__main__":
     torch.save({
         'model_state_dict': model.state_dict(), 
         'config': Config()
-    }, 'trained_model4.pth')
+    }, 'trained_model.pth')
             
             
 

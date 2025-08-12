@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from model import Config
+from config import Config
 from model import Model
 import math
 import inspect
