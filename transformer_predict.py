@@ -44,7 +44,7 @@ class TranslatorPredictor:
 
         for _ in range(max_length):
             with torch.autocast(device_type=self.device, dtype=torch.bfloat16):
-                out, _, encoder_output_previous, kv_cache = self.model(src_tensor, nxt, targets=None, targets_single=None, kv_cache=kv_cache, inference=True, encoder_output_previous=encoder_output_previous)
+                out, _, encoder_output_previous, kv_cache = self.model(src_tensor, nxt, targets_mtp=None, targets_single=None, kv_cache=kv_cache, inference=True, encoder_output_previous=encoder_output_previous)
             
             logits = out[:, -1, :]
             next_token = logits.argmax(dim=-1).item()
@@ -78,7 +78,7 @@ if __name__ == "__main__":
     
     predictor = TranslatorPredictor(model_path)
     
-    input_sentence = "a little girl is sitting in front of a large painted rainbow"
+    input_sentence = "a boy jumping in a fountain"
     prediction = predictor.predict(input_sentence)
     print(f"Translated: {prediction}")
 
